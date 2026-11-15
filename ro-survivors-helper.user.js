@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         RO 倖存者：三系法術與寶箱助手
 // @namespace    ro-survivors-local-helper
-// @version      1.2.0
-// @description  寶箱／磁鐵優先拾取、普攻與技能放逐、4／5技、重複遠征及中文寶箱配置。
+// @version      1.3.0
+// @description  可拖動面板、寶箱配置優先、背景掛機、優先拾箱／磁鐵及普攻放逐。
 // @match        https://ro.hans-webgametw.com/*
 // @run-at       document-start
 // @grant        none
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.2.0';
+  const VERSION = '1.3.0';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -37,7 +37,7 @@
     lightning: ['雷擊術', 'Lightning Bolt', 'Saeta de rayo'],
   };
   const DEFAULTS = {
-    enabled: false, skills: true, dodge: true, chests: true, pickups: true,
+    enabled: false, skills: true, dodge: true, chests: true, pickups: true, background: true,
     skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true,
     banish: false, banishBasic: true, banishExcludeEnabled: false, banishExclude: [],
     repeat: false, expedition: 'prontera', repeatLimit: 0, repeatDelay: 5000,
@@ -151,10 +151,22 @@
   }
   function rankChest(cards, cfg) {
     return cards.map(c => ({ ...c, tier: tierOf(c, cfg) })).sort((a, b) => {
-      const order = cfg.rarityFirst ? [b.rarity - a.rarity, a.tier - b.tier] : [a.tier - b.tier, b.rarity - a.rarity];
-      return order.find(Boolean) || a.index - b.index;
+      // 寶箱一律先遵守使用者優先級，技能用的 rarityFirst 不可覆蓋寶箱偏好。
+      return a.tier - b.tier || b.rarity - a.rarity || a.index - b.index;
     });
   }
+  const needsBackgroundClock = (config, hidden) => !!(config.enabled && config.background && hidden);
+  function clampPanelPosition(position, size, viewport) {
+    const width = Math.max(0, Number(size.width) || 0), height = Math.max(0, Number(size.height) || 0);
+    const x = Number(position.x), y = Number(position.y);
+    return { x: clamp(Number.isFinite(x) ? x : 8, 8, Math.max(8, viewport.width - width - 8)),
+      y: clamp(Number.isFinite(y) ? y : 8, 8, Math.max(8, viewport.height - height - 8)) };
+  }
+  const BACKGROUND_WORKER_SOURCE = `let timer = null;
+self.onmessage = event => {
+  if (event.data === 'start' && timer === null) timer = setInterval(() => self.postMessage('pulse'), 50);
+  if (event.data === 'stop' && timer !== null) { clearInterval(timer); timer = null; }
+};`;
   function chestDecision(cards, cfg, budget, deckAvailable, catalog = []) {
     const ranked = rankChest(cards, cfg);
     const configured = Object.values(cfg.priorities).some(x => splitTiers(x).length);
@@ -181,7 +193,7 @@
   function validateConfig(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('設定必須是 JSON 物件');
     const out = JSON.parse(JSON.stringify(DEFAULTS));
-    for (const key of ['enabled', 'skills', 'dodge', 'chests', 'pickups', 'rarityFirst', 'skillReroll', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    for (const key of ['enabled', 'skills', 'dodge', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
     if (typeof raw.fourth === 'string') out.fourth = raw.fourth.slice(0, 100).trim();
     if (typeof raw.fifth === 'string') out.fifth = raw.fifth.slice(0, 100).trim();
     if ([4, 5].includes(Number(raw.skillSlots))) out.skillSlots = Number(raw.skillSlots);
@@ -247,12 +259,13 @@
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, pickupPriority, pickupTargets, rankChest, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, pickupPriority, pickupTargets, rankChest, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
 
   const STORAGE = 'ro-survivors-helper.settings.v1';
+  const POSITION_STORAGE = 'ro-survivors-helper.panel-position.v1';
   let cfg = validateConfig(DEFAULTS);
   try { const saved = localStorage.getItem(STORAGE); if (saved) cfg = validateConfig(JSON.parse(saved)); } catch (error) { console.warn('[RO助手] 設定讀取失敗', error); }
   const state = {
@@ -264,6 +277,9 @@
     route: null,
     stages: [], flow: null, gameoverAt: null, runsStarted: 0, launchPending: false, launchStage: '',
     revealNode: null, revealAt: 0, revealClicked: false, lastListRead: 0,
+    settings: null, autoPauseOriginal: null, clockWorker: null, clockFallback: null, clockRunning: false,
+    clockTicker: null, clockTickerWasRunning: false, backgroundLastLogic: 0, backgroundStatus: '前台', resumeAfterVisibility: false,
+    panelDrag: null, suppressMiniClickUntil: 0,
   };
   let root, panel, ui, interval, attachTimer;
   const $ = selector => document.querySelector(selector);
@@ -279,6 +295,79 @@
   function save() {
     try { localStorage.setItem(STORAGE, JSON.stringify(cfg)); } catch { log('設定無法儲存；請檢查瀏覽器儲存空間'); }
   }
+  function releaseBackgroundTicker() {
+    const ticker = state.clockTicker, restart = state.clockTickerWasRunning;
+    state.clockTicker = null; state.clockTickerWasRunning = false;
+    try { if (restart && ticker?.start) ticker.start(); } catch { /* 已銷毀的時鐘無需恢復 */ }
+  }
+  function stopBackgroundClock() {
+    if (state.clockRunning) { try { state.clockWorker?.postMessage('stop'); } catch {} }
+    if (state.clockFallback !== null) { clearInterval(state.clockFallback); state.clockFallback = null; }
+    state.clockRunning = false; releaseBackgroundTicker();
+  }
+  function resumeVisibilityPause() {
+    const allowed = state.resumeAfterVisibility;
+    state.resumeAfterVisibility = false;
+    if (!allowed || !needsBackgroundClock(cfg, document.hidden) || state.game?.state !== 'paused') return;
+    const pause = $('#pause'), resume = $('#btn-resume');
+    if (visible(pause) && resume && !resume.disabled) { resume.click(); log('已恢復切換分頁造成的自動暫停'); }
+  }
+  function backgroundPulse() {
+    if (!needsBackgroundClock(cfg, document.hidden) || window.RO_DEAD || $('#ro-tab-dead')) { syncBackground(); return; }
+    try {
+      resumeVisibilityPause();
+      const now = performance.now();
+      // 手動驅動原有的完整遊戲時鐘，保留正常速度、暫停狀態、組隊與結算邏輯。
+      if (state.clockTicker?.update) state.clockTicker.update(now);
+      if (now - state.backgroundLastLogic >= 100) { state.backgroundLastLogic = now; tick(); }
+    } catch (error) {
+      stopBackgroundClock(); cfg.background = false; save();
+      log(`背景時鐘失敗，已關閉背景模式：${error.message}`);
+    }
+  }
+  function startBackgroundFallback() {
+    if (state.clockFallback === null) state.clockFallback = setInterval(backgroundPulse, 50);
+    state.clockRunning = true; state.backgroundStatus = '瀏覽器計時器（可能被限速）';
+  }
+  function syncBackground() {
+    if (state.settings) {
+      if (cfg.enabled && cfg.background) {
+        if (state.autoPauseOriginal === null) state.autoPauseOriginal = state.settings.autoPause;
+        state.settings.autoPause = false;
+      } else if (state.autoPauseOriginal !== null) {
+        state.settings.autoPause = state.autoPauseOriginal; state.autoPauseOriginal = null;
+      }
+    }
+    if (!needsBackgroundClock(cfg, document.hidden) || window.RO_DEAD || $('#ro-tab-dead')) {
+      stopBackgroundClock(); state.backgroundStatus = cfg.enabled && cfg.background ? '已就緒，前台使用原時鐘' : '未啟用'; return;
+    }
+    const ticker = state.game?.app?.ticker;
+    if (ticker && typeof ticker.update === 'function' && ticker !== state.clockTicker) {
+      releaseBackgroundTicker(); state.clockTicker = ticker; state.clockTickerWasRunning = !!ticker.started;
+      if (state.clockTickerWasRunning) ticker.stop?.();
+    }
+    if (state.clockRunning) {
+      if (state.clockWorker && state.clockFallback === null) state.backgroundStatus = ticker ? 'Worker 時鐘約 20 Hz' : 'Worker 等待接入遊戲時鐘';
+      return;
+    }
+    if (!state.clockWorker && typeof Worker === 'function' && typeof URL.createObjectURL === 'function') {
+      let workerURL;
+      try {
+        workerURL = URL.createObjectURL(new Blob([BACKGROUND_WORKER_SOURCE], { type: 'application/javascript' }));
+        state.clockWorker = new Worker(workerURL);
+        state.clockWorker.onmessage = event => { if (event.data === 'pulse') backgroundPulse(); };
+        state.clockWorker.onerror = () => {
+          state.clockWorker?.terminate(); state.clockWorker = null;
+          if (needsBackgroundClock(cfg, document.hidden)) startBackgroundFallback();
+        };
+      } catch { state.clockWorker = null; }
+      finally { if (workerURL) URL.revokeObjectURL(workerURL); }
+    }
+    if (state.clockWorker) {
+      try { state.clockWorker.postMessage('start'); state.clockRunning = true; state.backgroundStatus = ticker ? 'Worker 時鐘約 20 Hz' : 'Worker 等待接入遊戲時鐘'; }
+      catch { state.clockWorker = null; startBackgroundFallback(); }
+    } else startBackgroundFallback();
+  }
   function stopMove() {
     if (state.moveOwned && state.game) state.game.movePath = null;
     state.moveOwned = false; state.previous = null;
@@ -286,6 +375,7 @@
   function toggle() {
     cfg.enabled = !cfg.enabled; save();
     if (!cfg.enabled) stopMove();
+    syncBackground();
     log(cfg.enabled ? '已啟動' : '已暫停'); renderStatus();
   }
   function refreshCatalog() {
@@ -349,6 +439,7 @@
     stopMove(); state.game = g; state.route = null; state.velocities = new WeakMap(); state.used = state.skillUsed = 0;
     if (state.launchPending) { state.runsStarted++; log(`第 ${state.runsStarted} 次自動遠征已開始`); }
     state.launchPending = false; state.flow = null; state.gameoverAt = null;
+    syncBackground();
     state.zones.clear(); state.observedGame = g;
     // 記錄遊戲本來建立的紅色地面預警；不改寫傷害、技能、抽卡或角色能力。
     if (typeof g.zoneDecal === 'function') {
@@ -384,7 +475,9 @@
       if (!hooks || !registry || !items) throw new Error('當前版本的資料結構與適配器不同');
       state.registry = registry; state.itemRegistry = items; state.hooks = hooks;
       state.assets = objects.find(v => v.icons instanceof Map && v.itemTextures instanceof Map) || null;
+      state.settings = objects.find(v => typeof v.autoPause === 'boolean' && typeof v.muteHidden === 'boolean' && typeof v.lang === 'string') || null;
       hooks.start.push(observeGame); hooks.tick.push(observeGame);
+      syncBackground();
       state.bridge = '模組已連接，等待進入本局'; clearInterval(attachTimer); refreshCatalog();
       log('模組已連接；如已在局內，下一個遊戲幀會自動接入');
     } catch (error) { state.bridge = `連接失敗：${error.message}；選卡仍可用，走位等待連接`; }
@@ -566,7 +659,7 @@
   }
   function movement(now) {
     const g = state.game;
-    if (!g || !visible($('#hud')) || g.state !== 'playing' || g.player.dead || now < state.manualUntil || document.hidden || editingSettings() || g.replayMoves) { stopMove(); return; }
+    if (!g || !visible($('#hud')) || g.state !== 'playing' || g.player.dead || now < state.manualUntil || (document.hidden && !cfg.background) || (!document.hidden && editingSettings()) || g.replayMoves) { stopMove(); return; }
     if (!cfg.dodge && !cfg.chests && !cfg.pickups) { stopMove(); return; }
     if (now - state.lastMove < 110 || g.time === state.lastGameTime) return;
     state.lastMove = now; state.lastGameTime = g.time;
@@ -613,7 +706,8 @@
   function tick() {
     try {
       if (!cfg.enabled) return;
-      if (editingSettings() || document.hidden) { stopMove(); return; }
+      syncBackground();
+      if ((!document.hidden && editingSettings()) || (document.hidden && !cfg.background)) { stopMove(); return; }
       if (window.RO_DEAD || $('#ro-tab-dead')) { stopMove(); log('遊戲分頁已停用，請先在遊戲中恢復'); return; }
       const now = performance.now();
       if (now < state.manualUntil) { stopMove(); return; }
@@ -625,7 +719,7 @@
       state.errorCount = 0;
     } catch (error) {
       stopMove(); log(`執行失敗：${error.message}`); console.error('[RO助手]', error);
-      if (++state.errorCount >= 3) { cfg.enabled = false; save(); log('連續錯誤三次，已暫停；請查看診斷資訊'); }
+      if (++state.errorCount >= 3) { cfg.enabled = false; syncBackground(); save(); log('連續錯誤三次，已暫停；請查看診斷資訊'); }
     }
   }
   function renderStatus() {
@@ -644,6 +738,7 @@
     ui.querySelector('#exclude-toggle').classList.toggle('on', cfg.banishExcludeEnabled);
     ui.querySelector('#exclude-count').textContent = `${cfg.banishExcludeEnabled ? '排除名單已啟用' : '排除名單未啟用'}，已勾選 ${cfg.banishExclude.length} 個技能`;
     ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '重複遠征已啟用' : '重複遠征已關閉'} · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}`;
+    ui.querySelector('#background-status').textContent = `背景掛機：${state.backgroundStatus}`;
     ui.querySelector('#log').textContent = state.logs.slice(-10).map(e => `${e.time} ${e.message}`).join('\n');
   }
   function populate() {
@@ -656,25 +751,73 @@
     for (const el of ui.querySelectorAll('[data-priority]')) el.value = displayPriority(cfg.priorities[el.dataset.priority], el.dataset.priority, state.catalog);
     readStages(); renderExclusions(); renderStatus();
   }
+  function fitPanelPosition(remember = false) {
+    if (!root) return;
+    const rect = root.getBoundingClientRect();
+    const size = { width: rect.width || (panel?.hidden ? 84 : 390), height: rect.height || 42 };
+    const point = clampPanelPosition({ x: parseFloat(root.style.left), y: parseFloat(root.style.top) }, size, { width: window.innerWidth, height: window.innerHeight });
+    root.style.left = `${point.x}px`; root.style.top = `${point.y}px`; root.style.right = 'auto';
+    if (remember) { try { localStorage.setItem(POSITION_STORAGE, JSON.stringify(point)); } catch {} }
+    return point;
+  }
+  function resetPanelPosition() {
+    root.style.left = `${window.innerWidth - (panel.hidden ? 100 : 410)}px`; root.style.top = '90px'; fitPanelPosition();
+    try { localStorage.removeItem(POSITION_STORAGE); } catch {}
+  }
+  function togglePanel() { panel.hidden = !panel.hidden; fitPanelPosition(); }
+  function installPanelDrag() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(POSITION_STORAGE) || 'null');
+      if (stored && Number.isFinite(stored.x) && Number.isFinite(stored.y)) { root.style.left = `${stored.x}px`; root.style.top = `${stored.y}px`; }
+    } catch {}
+    fitPanelPosition();
+    ui.addEventListener('pointerdown', event => {
+      const target = event.target, mini = target.closest?.('#mini'), handle = target.closest?.('#drag-handle');
+      if ((!mini && !handle) || event.button !== 0 || event.isPrimary === false || (!mini && target.closest?.('button,input,select,textarea,a'))) return;
+      const rect = root.getBoundingClientRect();
+      state.panelDrag = { pointerId: event.pointerId, sx: event.clientX, sy: event.clientY,
+        x: parseFloat(root.style.left) || rect.left, y: parseFloat(root.style.top) || rect.top, moved: false };
+      try { (mini || handle).setPointerCapture?.(event.pointerId); } catch {}
+      event.stopPropagation();
+    });
+    window.addEventListener('pointermove', event => {
+      const drag = state.panelDrag;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const dx = event.clientX - drag.sx, dy = event.clientY - drag.sy;
+      if (!drag.moved && Math.hypot(dx, dy) < 5) return;
+      drag.moved = true; root.style.left = `${drag.x + dx}px`; root.style.top = `${drag.y + dy}px`;
+      fitPanelPosition(); event.preventDefault();
+    }, { capture: true, passive: false });
+    const end = event => {
+      const drag = state.panelDrag;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      state.panelDrag = null;
+      if (drag.moved) { state.suppressMiniClickUntil = performance.now() + 400; fitPanelPosition(true); }
+    };
+    window.addEventListener('pointerup', end, true); window.addEventListener('pointercancel', end, true);
+    window.addEventListener('resize', () => { state.panelDrag = null; fitPanelPosition(true); });
+  }
   function mount() {
     root = document.createElement('div'); root.id = 'ro-survivors-helper-host';
-    root.style.cssText = 'position:fixed;right:12px;top:90px;z-index:2147483000;';
+    root.style.cssText = `position:fixed;left:${window.innerWidth - 100}px;top:90px;z-index:2147483000;`;
     ui = root.attachShadow({ mode: 'open' });
     ui.innerHTML = `<style>
       :host{all:initial;color:#edf2ff;font:13px/1.6 system-ui,"Microsoft YaHei",sans-serif}*{box-sizing:border-box}button,input,select,textarea{font:inherit}button,select{cursor:pointer}button{border:1px solid #48628d;background:#253651;color:#e9f1ff;border-radius:7px;padding:5px 10px}button:hover{background:#354e76}button.on{background:#17654a}#mini{box-shadow:0 3px 15px #0008}#panel{width:390px;max-width:calc(100vw - 24px);max-height:calc(100vh - 130px);overflow:auto;background:#111d2af5;border:1px solid #50688b;border-radius:12px;box-shadow:0 8px 35px #0009;padding:15px;margin-top:7px}#panel[hidden]{display:none}.top{display:flex;gap:8px;align-items:center}.top strong{flex:1}#status{white-space:pre-wrap;color:#9fe3d0;margin:10px 0}label{display:block;margin:8px 0}input:not([type=checkbox]),select,textarea{width:100%;background:#0b1421;color:#e5edff;border:1px solid #40526c;border-radius:6px;padding:6px}input[type=checkbox]{accent-color:#5ad5ac}textarea{min-height:88px;resize:vertical}small,.hint{color:#adc0db}details{border-top:1px solid #31425d;padding-top:8px;margin-top:12px}summary{cursor:pointer;font-weight:650}h4{margin:12px 0 4px;color:#9bd9ff}#log{white-space:pre-wrap;word-break:break-word;font:11px/1.6 Consolas,monospace;max-height:160px;overflow:auto;color:#becce2}.row{display:flex;gap:8px}.row>*{flex:1}.checkrow{display:flex;flex-wrap:wrap;gap:0 12px}.checkrow label{margin:4px 0}.buttons{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}#config{min-height:150px}p{margin:7px 0}
       input[type=radio]{width:auto;accent-color:#5ad5ac}#fifth-field[hidden]{display:none}#banish-list{max-height:190px;overflow:auto;border:1px solid #31425d;border-radius:6px;padding:6px;margin-top:6px}#banish-list label{margin:3px 0}
+      #drag-handle,#mini{touch-action:none;cursor:grab}#drag-handle strong{user-select:none}#drag-handle button{cursor:pointer}
     </style>
-    <button id="mini" title="開啟或收起設定 (F9)">RO Ⅱ</button>
+    <button id="mini" title="點擊展開／收起，按住拖動移位 (F9)">RO Ⅱ</button>
     <section id="panel" hidden>
-      <div class="top"><strong>RO 倖存者助手 ${VERSION}</strong><button id="close">收起</button></div>
+      <div class="top" id="drag-handle"><strong title="按住標題拖動">RO 助手 ${VERSION} · 拖動</strong><button id="reset-position">歸位</button><button id="close">收起</button></div>
       <div id="status"></div><button id="toggle">啟動 (F8)</button>
       <div class="checkrow"><label><input data-setting="skills" type="checkbox"> 自動選技能</label><label><input data-setting="dodge" type="checkbox"> 自動避怪</label><label><input data-setting="chests" type="checkbox"> 尋寶與寶箱選卡</label><label><input data-setting="pickups" type="checkbox"> 安全拾取掉落物</label></div>
       <p id="owned" class="hint"></p>
       <div class="checkrow">技能欄位（不含普攻）：<label><input type="radio" name="skillSlots" data-setting="skillSlots" value="4"> 4 個</label><label><input type="radio" name="skillSlots" data-setting="skillSlots" value="5"> 5 個（二轉）</label></div>
       <label>第四個技能（空白＝任意技能）<input data-setting="fourth" list="skills-list" placeholder="例如 聖靈召喚 [soul_strike]"><datalist id="skills-list"></datalist></label>
       <label id="fifth-field" hidden>第五個技能（空白＝任意技能）<input data-setting="fifth" list="skills-list" placeholder="選擇 5 個技能時生效"></label>
-      <label><input data-setting="rarityFirst" type="checkbox"> 稀有度優先：傳說 ＞ 史詩 ＞ 稀有 ＞ 普通</label>
-      <small>固定三技：火箭術／冰箭術／雷擊術。預設先比稀有度，同稀有度比目標 ＞ 急速 ＞ 傷害。取消上項後，技能先比強化類型，寶箱先比設定優先級。</small>
+      <label><input data-setting="rarityFirst" type="checkbox"> 技能升級先比稀有度，再比目標／急速／傷害</label>
+      <small>固定三技：火箭術／冰箭術／雷擊術。寶箱固定先比使用者優先級，同級才比稀有度；本開關只影響技能升級。</small>
+      <label><input data-setting="background" type="checkbox"> 背景掛機：切換分頁繼續運行</label><small id="background-status"></small>
       <details><summary>升級選牌前放逐已有技能</summary>
       <div class="buttons"><button id="banish-toggle">啟動放逐</button><button id="exclude-toggle">啟用排除放逐的技能</button></div>
       <label><input data-setting="banishBasic" type="checkbox"> 同時放逐普攻的升級牌（不佔 4／5 技名額）</label>
@@ -691,7 +834,7 @@
       <p class="hint">每行一級，第一行為第一優先級；同級用 | 分隔。選入後顯示「中文名稱 [ID]」，舊版純 ID 自動補中文。空白＝無指定。可保留名稱與 ID 一起排序，或只填名稱／ID。包含匹配須寫 *傷害*。</p>
       ${Object.entries(SLOT_NAMES).map(([id, name]) => `<h4>${name}</h4><select data-catalog="${id}"><option>等待物品表…</option></select><textarea data-priority="${id}" placeholder="第一優先級\n第二優先級 | 同級另一項"></textarea>`).join('')}
       <label>三張都不在第一優先級時<select data-setting="rerollMode"><option value="card-deck">先重抽單張，再重抽整組</option><option value="deck-card">先重抽整組，再重抽單張</option><option value="card">僅重抽單張</option><option value="deck">僅重抽整組</option><option value="off">不重抽</option></select></label>
-      <small>單張只會刷新同一欄位；優先重抽有可達成目標的欄位。有任一張命中第一級即停止重抽，再按排序規則選牌。所有欄位都留空時不重抽。</small>
+      <small>單張只會刷新同一欄位；有任一張命中第一級即停止重抽，選已配置的較高優先級，同級再比較稀有度。所有欄位都留空時不重抽，只比較稀有度。</small>
       <div class="row"><label>每箱重抽上限<input data-setting="maxRerolls" type="number" min="0" max="50"></label><label>保留單張次數<input data-setting="reserveCard" type="number" min="0" max="99"></label><label>保留整組次數<input data-setting="reserveDeck" type="number" min="0" max="99"></label></div>
       <label>重抽用盡／達上限後<select data-setting="exhausted"><option value="best">從現有卡片選最優項</option><option value="wait">等待手動選擇</option></select></label>
       <small>使用遊戲原有重抽次數；不購買、不補充。每局剩餘次數以遊戲按鈕為準。</small></details>
@@ -702,13 +845,16 @@
       <label>組隊掉落分配<select data-setting="partyRoll"><option value="greed">貪婪</option><option value="need">需求</option><option value="pass">放棄</option><option value="manual">等待手動</option></select></label>
       <label>每次選卡等待毫秒<input data-setting="delay" type="number" min="850" max="5000"></label>
       <label><input data-setting="skillReroll" type="checkbox"> 無合規技能牌時有限重抽整組</label>
-      <p class="hint">安全可達目標中優先寶箱與磁鐵，同級先近後遠，再拾取其他掉落。寶箱金錢不足時略過；危險目標仍先避怪。方向鍵／WASD 或畫面點擊後讓出操作 3 秒。F8 啟停、F9 面板；後台暫停自動操作。</p>
+      <p class="hint">安全目標中優先寶箱與磁鐵，再拾取其他掉落。方向鍵／WASD 或畫面點擊後讓出操作 3 秒。背景模式會暫時關閉遊戲「離開自動暫停」，並用背景時鐘繼續運行；保留手動暫停。瀏覽器凍結／卸載分頁或電腦休眠仍會中斷。</p>
       <div class="buttons"><button id="rescan">重新識別</button><button id="diagnose">顯示診斷</button></div><pre id="log"></pre>
       </details>
       <details><summary>匯入／匯出設定</summary><textarea id="config" spellcheck="false" placeholder="在這裡貼上設定 JSON"></textarea><div class="buttons"><button id="export">匯出到上框</button><button id="import">匯入上框設定</button></div><small>匯入後保持暫停，按啟動即可使用。</small></details>
     </section>`;
     document.body.appendChild(root); panel = ui.querySelector('#panel');
-    ui.querySelector('#mini').onclick = ui.querySelector('#close').onclick = () => { panel.hidden = !panel.hidden; };
+    ui.querySelector('#mini').onclick = () => { if (performance.now() >= state.suppressMiniClickUntil) togglePanel(); };
+    ui.querySelector('#close').onclick = togglePanel;
+    ui.querySelector('#reset-position').onclick = resetPanelPosition;
+    installPanelDrag();
     ui.querySelector('#toggle').onclick = toggle;
     ui.addEventListener('keydown', e => { if (e.key !== 'F8' && e.key !== 'F9') e.stopPropagation(); });
     ui.addEventListener('keyup', e => e.stopPropagation());
@@ -733,7 +879,7 @@
         const slot = el.dataset.catalog, area = ui.querySelector(`[data-priority="${slot}"]`);
         area.value = [area.value.trim(), displayPriority(el.value, slot, state.catalog)].filter(Boolean).join('\n'); cfg.priorities[slot] = area.value; el.value = '';
       }
-      save(); renderStatus();
+      save(); syncBackground(); renderStatus();
     });
     ui.querySelector('#banish-toggle').onclick = () => { cfg.banish = !cfg.banish; save(); renderStatus(); };
     ui.querySelector('#exclude-toggle').onclick = () => { cfg.banishExcludeEnabled = !cfg.banishExcludeEnabled; save(); renderStatus(); };
@@ -746,13 +892,13 @@
     ui.querySelector('#rescan').onclick = () => { resetPicker(); state.flow = null; state.errorCount = 0; if (!state.hooks) attach(); readStages(); log('已重新識別；本組重抽計數重新開始'); };
     ui.querySelector('#diagnose').onclick = () => {
       const g = state.game, picker = $('#picker'), kind = picker && pickerKind(picker);
-      const report = { version: VERSION, bridge: state.bridge, state: g?.state, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
+      const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
         cards: visible(picker) && kind ? [...picker.querySelectorAll('.pk-card')].map((b, i) => { const c = readCard(b, i, kind); return { name: c.name, id: c.id, slot: c.slot, rarity: c.rarity, lines: c.lines }; }) : [] };
       ui.querySelector('#config').value = JSON.stringify(report, null, 2); ui.querySelector('#config').closest('details').open = true;
     };
     ui.querySelector('#export').onclick = () => { ui.querySelector('#config').value = JSON.stringify(cfg, null, 2); };
     ui.querySelector('#import').onclick = () => {
-      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
+      try { cfg = validateConfig(JSON.parse(ui.querySelector('#config').value)); cfg.enabled = false; stopMove(); syncBackground(); save(); populate(); log('設定已匯入，保持暫停'); } catch (error) { log(`匯入失敗：${error.message}`); }
     };
     populate(); refreshCatalog();
     interval = setInterval(tick, 100); setInterval(renderStatus, 500);
@@ -761,15 +907,26 @@
   window.addEventListener('keydown', e => {
     const editing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName) || e.target?.isContentEditable || !!ui?.activeElement;
     if (e.key === 'F8') { e.preventDefault(); e.stopImmediatePropagation(); toggle(); return; }
-    if (e.key === 'F9' && panel) { e.preventDefault(); e.stopImmediatePropagation(); panel.hidden = !panel.hidden; return; }
+    if (e.key === 'F9' && panel) { e.preventDefault(); e.stopImmediatePropagation(); togglePanel(); return; }
+    if (e.key === 'Escape') state.resumeAfterVisibility = false;
     if (editing) { stopMove(); return; }
     if (e.isTrusted && /^(w|a|s|d|arrowup|arrowdown|arrowleft|arrowright)$/i.test(e.key)) { state.manualUntil = performance.now() + 3000; stopMove(); }
   }, true);
   window.addEventListener('pointerdown', e => {
     if (!e.composedPath().includes(root) && e.target instanceof HTMLCanvasElement && e.isTrusted) { state.manualUntil = performance.now() + 3000; stopMove(); }
   }, true);
-  window.addEventListener('blur', stopMove);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) stopMove(); });
+  window.addEventListener('blur', () => { if (!cfg.enabled || !cfg.background) stopMove(); });
+  window.addEventListener('ro-pause', () => { state.resumeAfterVisibility = false; }, true);
+  document.addEventListener('visibilitychange', () => {
+    state.resumeAfterVisibility = needsBackgroundClock(cfg, document.hidden) && state.game?.state === 'playing';
+    syncBackground();
+    if (state.resumeAfterVisibility) setTimeout(resumeVisibilityPause, 0);
+    if (document.hidden && !cfg.background) stopMove();
+  }, true);
+  window.addEventListener('pagehide', () => {
+    stopBackgroundClock();
+    if (state.settings && state.autoPauseOriginal !== null) state.settings.autoPause = state.autoPauseOriginal;
+  });
   window.__RO_SURVIVORS_HELPER__ = Object.freeze({ version: VERSION });
   if (document.body) mount(); else document.addEventListener('DOMContentLoaded', mount, { once: true });
 })();
