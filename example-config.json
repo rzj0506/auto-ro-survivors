@@ -4,6 +4,7 @@
   "dodge": true,
   "chests": true,
   "pickups": true,
+  "background": true,
   "skillSlots": 5,
   "fourth": "",
   "fifth": "",

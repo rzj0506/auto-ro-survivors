@@ -4,6 +4,8 @@ RO 倖存者油猴助手
 
 源码位于 main 分支，`.github/workflows/publish-userscript.yml` 负责把新版本发布到 userscript-release 分支。
 
+v1.3.0 支持拖动悬浮框，宝箱按配置优先级高于稀有度选择，并提供切页不暂停的后台挂机。开启助手与「背景掛機」后生效；手动暂停保留，浏览器冻结／丢弃页面或电脑睡眠时无法运行。完整配置见 [使用说明](docs/使用说明.md)。
+
 首次安装与检查：
 
 1. 仓库保持公开，启用 GitHub Actions。
