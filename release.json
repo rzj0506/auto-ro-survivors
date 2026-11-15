@@ -1,0 +1,8 @@
+{
+  "version": "1.2.0",
+  "repository": "rzj0506/auto-ro-survivors",
+  "branch": "userscript-release",
+  "downloadURL": "https://raw.githubusercontent.com/rzj0506/auto-ro-survivors/userscript-release/ro-survivors-helper.user.js",
+  "updateURL": "https://raw.githubusercontent.com/rzj0506/auto-ro-survivors/userscript-release/ro-survivors-helper.meta.js",
+  "sha256": "5ab380580363104c1c4c12d0a43e6ee39c6a9cfa9ba117bb6fcae279fa6dc025"
+}
