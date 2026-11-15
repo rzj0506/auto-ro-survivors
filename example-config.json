@@ -1,0 +1,41 @@
+{
+  "enabled": false,
+  "skills": true,
+  "dodge": true,
+  "chests": true,
+  "pickups": true,
+  "skillSlots": 5,
+  "fourth": "",
+  "fifth": "",
+  "rarityFirst": true,
+  "skillReroll": true,
+  "banish": false,
+  "banishBasic": true,
+  "banishExcludeEnabled": true,
+  "banishExclude": [
+    "firebolt",
+    "coldbolt",
+    "lightning"
+  ],
+  "repeat": false,
+  "expedition": "prontera",
+  "repeatLimit": 0,
+  "repeatDelay": 5000,
+  "lootRange": 1800,
+  "partyRoll": "greed",
+  "rerollMode": "card-deck",
+  "maxRerolls": 6,
+  "reserveCard": 0,
+  "reserveDeck": 0,
+  "exhausted": "best",
+  "delay": 1000,
+  "safety": 65,
+  "chestRange": 2400,
+  "priorities": {
+    "potion": "p_cd\np_dmg\np_area\np_hp",
+    "elixir": "e_dmg\ne_critdmg | e_crit\ne_hp",
+    "blessing": "b_double\nb_cd\nb_dmg\nb_lifesteal",
+    "dish": "d_int\nd_agi | d_dex\nd_vit",
+    "deity": "firebolt | coldbolt | lightning"
+  }
+}
