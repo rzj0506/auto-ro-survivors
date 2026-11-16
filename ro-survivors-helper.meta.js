@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         RO 倖存者：三系法術與寶箱助手
 // @namespace    ro-survivors-local-helper
-// @version      1.3.0
-// @description  可拖動面板、寶箱配置優先、背景掛機、優先拾箱／磁鐵及普攻放逐。
-// @match        https://ro.hans-webgametw.com/*
+// @version      1.4.0
+// @description  ro-survivors.com 多語系適配：三系法術、避怪拾取、寶箱優先級、放逐、重複遠征與背景掛機。
+// @match        https://ro-survivors.com/*
 // @run-at       document-start
 // @grant        none
 // @sandbox      raw

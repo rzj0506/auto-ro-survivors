@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         RO 倖存者：三系法術與寶箱助手
 // @namespace    ro-survivors-local-helper
-// @version      1.3.0
-// @description  可拖動面板、寶箱配置優先、背景掛機、優先拾箱／磁鐵及普攻放逐。
-// @match        https://ro.hans-webgametw.com/*
+// @version      1.4.0
+// @description  ro-survivors.com 多語系適配：三系法術、避怪拾取、寶箱優先級、放逐、重複遠征與背景掛機。
+// @match        https://ro-survivors.com/*
 // @run-at       document-start
 // @grant        none
 // @sandbox      raw
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.3.0';
+  const VERSION = '1.4.0';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -23,7 +23,7 @@
   const STAGES = [
     ['prontera', '普隆德拉原野'], ['sewer', '普隆德拉地下水道'], ['sunken', '失事輪'], ['byalan', '柏伊亞嵐島'],
     ['payon', '斐揚森林'], ['payon_cave', '斐揚洞穴'], ['prt_castle', '普隆德拉城'], ['orcs', '獸人村'],
-    ['pyramid', '夢羅克金字塔'], ['maze', '迷宮森林'],
+    ['pyramid', '夢羅克金字塔'], ['louyang', '洛陽燈籠節'],
   ];
   const ITEM_NAMES = {
     p_regen: '回復藥水', p_cd: '冷卻藥水', p_hp: '生命藥水', p_armor: '護甲藥水', p_area: '範圍藥水', p_pickup: '採集藥水', p_greed: '貪婪藥水', p_speed: '速度藥水', p_cast: '詠唱藥水', p_reach: '近戰範圍藥水', p_dmg: '傷害藥水',
@@ -32,9 +32,14 @@
     d_str: 'STR（力量）料理', d_agi: 'AGI（敏捷）料理', d_vit: 'VIT（體力）料理', d_int: 'INT（智力）料理', d_dex: 'DEX（靈巧）料理', d_luk: 'LUK（幸運）料理',
   };
   const ALIASES = {
-    firebolt: ['火箭術', 'Fire Bolt', 'Saeta de fuego'],
-    coldbolt: ['冰箭術', 'Cold Bolt', 'Saeta de hielo'],
-    lightning: ['雷擊術', 'Lightning Bolt', 'Saeta de rayo'],
+    firebolt: ['火箭術', 'Fire Bolt', 'Saeta de fuego', 'Lanças de Fogo'],
+    coldbolt: ['冰箭術', 'Cold Bolt', 'Saeta de hielo', 'Lanças de Gelo'],
+    lightning: ['雷擊術', 'Lightning Bolt', 'Saeta de rayo', 'Relâmpago'],
+  };
+  const SLOT_ALIASES = {
+    potion: ['藥水', 'potion', 'poción', 'poção'], elixir: ['秘藥', '祕藥', 'elixir'],
+    blessing: ['祝福', 'blessing', 'bendición', 'bênção'], dish: ['料理', 'dish', 'plato', 'prato'],
+    deity: ['神格', '神祇', '神祗', 'deity', 'divindade'],
   };
   const DEFAULTS = {
     enabled: false, skills: true, dodge: true, chests: true, pickups: true, background: true,
@@ -48,13 +53,23 @@
   };
   const CHAR_MAP = Object.fromEntries('唤喚 术術 击擊 伤傷 传傳 说說 优優 诗詩 回回 药藥 秘秘 复復 却卻 护護 围圍 采採 贪貪 诵誦 咏詠 双雙 掷擲 丰豐 饶饒 智智 烹烹 调調 闪閃 络絡 连連 链鏈 灵靈 圣聖 体體 力力 敏敏 捷捷 运運 龙龍 毁毀 灭滅 寿壽 烈烈 风風 祝祝 觉覺 醒醒 标標 数數 时時 间間 动動 速速 强強 冰冰 箭箭'.split(' ').map(x => [x[0], x[1]]));
   const norm = value => String(value ?? '').normalize('NFKC').toLowerCase()
-    .replace(/deity/g, '神格')
+    .replace(/deity|神祇|神祗/g, '神格')
     .replace(/[\u3400-\u9fff]/g, ch => CHAR_MAP[ch] || ch)
     .replace(/[\s·•:：,，。!！()（）\[\]「」『』_\-]/g, '');
   const baseName = value => String(value ?? '').replace(/\s*\+\s*\d+\s*$/, '').trim();
   const tokenId = value => String(value ?? '').normalize('NFKC').match(/\[([a-z][\w.-]*)\]\s*$/i)?.[1] || '';
   const splitTiers = text => String(text || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean)
     .map(line => line.split(/[|｜]/).map(x => x.trim()).filter(Boolean)).filter(x => x.length);
+  function slotId(label, definitions = []) {
+    const value = norm(label);
+    const found = definitions.find(d => SLOT_NAMES[d.id] && norm(d.name) === value);
+    return found?.id || Object.keys(SLOT_ALIASES).find(id => SLOT_ALIASES[id].some(alias => norm(alias) === value)) || '';
+  }
+  function pickerKindOf(title) {
+    if (/寶箱|宝箱|treasure chest|cofre del tesoro|baú do tesouro/i.test(title)) return 'chest';
+    if (/升級|升级|level\s*up|subiu de nível/i.test(title)) return 'skill';
+    return '';
+  }
   function matchToken(token, card) {
     const t = norm(tokenId(token) || token);
     if (!t) return false;
@@ -259,7 +274,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, pickupPriority, pickupTargets, rankChest, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, SLOT_ALIASES, slotId, pickerKindOf, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, pickupPriority, pickupTargets, rankChest, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -277,7 +292,7 @@ self.onmessage = event => {
     route: null,
     stages: [], flow: null, gameoverAt: null, runsStarted: 0, launchPending: false, launchStage: '',
     revealNode: null, revealAt: 0, revealClicked: false, lastListRead: 0,
-    settings: null, autoPauseOriginal: null, clockWorker: null, clockFallback: null, clockRunning: false,
+    settings: null, slotDefinitions: [], catalogLang: null, autoPauseOriginal: null, clockWorker: null, clockFallback: null, clockRunning: false,
     clockTicker: null, clockTickerWasRunning: false, backgroundLastLogic: 0, backgroundStatus: '前台', resumeAfterVisibility: false,
     panelDrag: null, suppressMiniClickUntil: 0,
   };
@@ -379,6 +394,7 @@ self.onmessage = event => {
     log(cfg.enabled ? '已啟動' : '已暫停'); renderStatus();
   }
   function refreshCatalog() {
+    state.catalogLang = state.settings?.lang;
     const game = state.game;
     const abs = value => value ? new URL(value, location.href).href : '';
     const items = Object.values(state.itemRegistry).filter(d => d && SLOT_NAMES[d.slot]).map(d => ({ id: d.id, slot: d.slot, name: d.name,
@@ -476,6 +492,7 @@ self.onmessage = event => {
       state.registry = registry; state.itemRegistry = items; state.hooks = hooks;
       state.assets = objects.find(v => v.icons instanceof Map && v.itemTextures instanceof Map) || null;
       state.settings = objects.find(v => typeof v.autoPause === 'boolean' && typeof v.muteHidden === 'boolean' && typeof v.lang === 'string') || null;
+      state.slotDefinitions = objects.find(v => Array.isArray(v) && Object.keys(SLOT_NAMES).every(id => v.some(d => d?.id === id && typeof d.name === 'string'))) || [];
       hooks.start.push(observeGame); hooks.tick.push(observeGame);
       syncBackground();
       state.bridge = '模組已連接，等待進入本局'; clearInterval(attachTimer); refreshCatalog();
@@ -496,23 +513,26 @@ self.onmessage = event => {
     const lines = text(button, '.pk-lines');
     let id = kind === 'skill' ? skillId(name, state.registry) : '', slot = '';
     if (kind === 'chest') {
-      slot = Object.keys(SLOT_NAMES).find(k => norm(sub) === norm(SLOT_NAMES[k]) || norm(sub) === norm(k)) || '';
-      if (!slot) slot = Object.entries({ potion: ['poción', 'potion'], elixir: ['elixir'], blessing: ['bendición', 'blessing'], dish: ['plato', 'dish'], deity: ['deity'] }).find(([, aliases]) => aliases.some(n => norm(sub) === norm(n)))?.[0] || '';
+      slot = slotId(sub, state.slotDefinitions);
       id = resolveItem(name, slot, button.querySelector('.pk-art img')?.src, state.catalog)?.id || '';
       if (slot === 'deity' && !id) id = skillId(name.replace(/\s*(?:Deity|神格)\s*(?:\+\s*\d+)?$/i, ''), state.registry);
     }
+    // 新站的天賦可讓不同技能顯示成同名。優先用本組牌的原始 ID，文字作後備。
+    const hand = state.game?.hand?.[kind === 'skill' ? 'level' : 'chest'];
+    const native = state.game?.state === 'levelup' && Array.isArray(hand) && hand.length === $('#pk-cards')?.querySelectorAll('.pk-card').length ? hand[index] : null;
+    if (kind === 'skill' && native && typeof native.id === 'string' && state.registry[native.id]) id = native.id;
+    if (kind === 'chest' && native && SLOT_NAMES[native.slot] && typeof native.item === 'string' && state.catalog.some(c => c.slot === native.slot && c.id === native.item)) {
+      slot = native.slot; id = native.item;
+    }
     const reroll = [...(slotEl?.querySelectorAll('.pk-act') || [])].find(b => /重抽|重擲|reroll/i.test(`${b.title} ${b.textContent}`) && !b.disabled);
-    const banish = [...(slotEl?.querySelectorAll('.pk-act') || [])].find(b => /放逐|banish/i.test(`${b.title} ${b.textContent}`) && !b.disabled);
-    return { index, name, id, slot, sub, lines, rarity: rarityOf(badge), isNew: !!button.querySelector('.pk-ribbon') || /技能|habilidad|^skill$/i.test(badge), button, slotEl, reroll, canReroll: !!reroll, banish, canBanish: !!banish };
+    const banish = [...(slotEl?.querySelectorAll('.pk-act') || [])].find(b => /放逐|banish|banir/i.test(`${b.title} ${b.textContent}`) && !b.disabled);
+    return { index, name, id, slot, sub, lines, rarity: rarityOf(badge), isNew: kind === 'skill' && typeof native?.isNew === 'boolean' ? native.isNew : !!button.querySelector('.pk-ribbon') || /技能|habilidad|^skill$/i.test(badge), button, slotEl, reroll, canReroll: !!reroll, banish, canBanish: !!banish };
   }
   function deckButton(picker) {
     return [...picker.querySelectorAll('#pk-bar .pk-act')].find(b => /重抽|reroll/i.test(`${b.title} ${b.textContent}`) && !b.disabled);
   }
   function pickerKind(picker) {
-    const title = text(picker, '#pk-title');
-    if (/寶箱|宝箱|treasure chest|cofre del tesoro/i.test(title)) return 'chest';
-    if (/升級|升级|level\s*up/i.test(title)) return 'skill';
-    return '';
+    return pickerKindOf(text(picker, '#pk-title'));
   }
   function resetPicker() {
     state.pickerNode = null; state.pending = null; state.used = 0; state.skillUsed = 0;
@@ -627,11 +647,11 @@ self.onmessage = event => {
     }
     const dialog = $('#npc-dialog');
     if (visible(dialog)) {
-      if (state.game?.state === 'over' && /未完待續|continuar|to be continued/i.test(text(dialog, '#npc-name'))) {
+      if (state.game?.state === 'over' && /待續|continuar|continua|to be continued/i.test(text(dialog, '#npc-name'))) {
         return flowClick(dialog.querySelector('#npc-options button.primary'), 'continue-summary', now);
       }
       if (state.launchStage === cfg.expedition && dialog.querySelector('#npc-text .diff')) {
-        const button = [...dialog.querySelectorAll('#npc-options button')].find(b => /前往野外|ir al campo|go to the field/i.test(b.textContent));
+        const button = [...dialog.querySelectorAll('#npc-options button')].find(b => /前往野外|ir al campo|ir para o campo|go to the field/i.test(b.textContent));
         if (button) { state.launchPending = true; return flowClick(button, 'difficulty', now); }
         log('遠征確認不是單人出發流程，等待手動確認'); return true;
       }
@@ -652,7 +672,7 @@ self.onmessage = event => {
     }
     if (visible($('#lobby-ui')) && document.body.classList.contains('in-lobby') && !visible($('#loading'))) {
       const prompt = $('#lobby-prompt');
-      if (visible(prompt) && /隊長|captain|capitán/i.test(prompt.textContent)) return flowClick(prompt, 'captain', now);
+      if (visible(prompt) && /隊長|captain|capitán|capitão/i.test(prompt.textContent)) return flowClick(prompt, 'captain', now);
       log('重複遠征等待隊長；請先走到遠征隊長附近'); return true;
     }
     return false;
@@ -707,6 +727,7 @@ self.onmessage = event => {
     try {
       if (!cfg.enabled) return;
       syncBackground();
+      if (state.catalogLang !== state.settings?.lang) refreshCatalog();
       if ((!document.hidden && editingSettings()) || (document.hidden && !cfg.background)) { stopMove(); return; }
       if (window.RO_DEAD || $('#ro-tab-dead')) { stopMove(); log('遊戲分頁已停用，請先在遊戲中恢復'); return; }
       const now = performance.now();
@@ -816,7 +837,7 @@ self.onmessage = event => {
       <label>第四個技能（空白＝任意技能）<input data-setting="fourth" list="skills-list" placeholder="例如 聖靈召喚 [soul_strike]"><datalist id="skills-list"></datalist></label>
       <label id="fifth-field" hidden>第五個技能（空白＝任意技能）<input data-setting="fifth" list="skills-list" placeholder="選擇 5 個技能時生效"></label>
       <label><input data-setting="rarityFirst" type="checkbox"> 技能升級先比稀有度，再比目標／急速／傷害</label>
-      <small>固定三技：火箭術／冰箭術／雷擊術。寶箱固定先比使用者優先級，同級才比稀有度；本開關只影響技能升級。</small>
+      <small>適配 ro-survivors.com。固定三技：火箭術／冰箭術／雷擊術。寶箱固定先比使用者優先級，同級才比稀有度；本開關只影響技能升級。</small>
       <label><input data-setting="background" type="checkbox"> 背景掛機：切換分頁繼續運行</label><small id="background-status"></small>
       <details><summary>升級選牌前放逐已有技能</summary>
       <div class="buttons"><button id="banish-toggle">啟動放逐</button><button id="exclude-toggle">啟用排除放逐的技能</button></div>
@@ -886,13 +907,13 @@ self.onmessage = event => {
     ui.querySelector('#read-stages').onclick = () => {
       if (visible($('#stages'))) { readStages(); log('副本清單已更新'); return; }
       const prompt = $('#lobby-prompt');
-      if (visible(prompt) && /隊長|captain|capitán/i.test(prompt.textContent)) { prompt.click(); readStages(); log('已打開隊長的副本清單'); }
+      if (visible(prompt) && /隊長|captain|capitán|capitão/i.test(prompt.textContent)) { prompt.click(); readStages(); log('已打開隊長的副本清單'); }
       else log('請先到遠征隊長附近，或手動打開遠征清單後再讀取');
     };
     ui.querySelector('#rescan').onclick = () => { resetPicker(); state.flow = null; state.errorCount = 0; if (!state.hooks) attach(); readStages(); log('已重新識別；本組重抽計數重新開始'); };
     ui.querySelector('#diagnose').onclick = () => {
       const g = state.game, picker = $('#picker'), kind = picker && pickerKind(picker);
-      const report = { version: VERSION, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
+      const report = { version: VERSION, site: location.origin, language: state.settings?.lang, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
         cards: visible(picker) && kind ? [...picker.querySelectorAll('.pk-card')].map((b, i) => { const c = readCard(b, i, kind); return { name: c.name, id: c.id, slot: c.slot, rarity: c.rarity, lines: c.lines }; }) : [] };
       ui.querySelector('#config').value = JSON.stringify(report, null, 2); ui.querySelector('#config').closest('details').open = true;
     };
@@ -916,6 +937,7 @@ self.onmessage = event => {
     if (!e.composedPath().includes(root) && e.target instanceof HTMLCanvasElement && e.isTrusted) { state.manualUntil = performance.now() + 3000; stopMove(); }
   }, true);
   window.addEventListener('blur', () => { if (!cfg.enabled || !cfg.background) stopMove(); });
+  window.addEventListener('ro-lang', () => setTimeout(refreshCatalog, 0));
   window.addEventListener('ro-pause', () => { state.resumeAfterVisibility = false; }, true);
   document.addEventListener('visibilitychange', () => {
     state.resumeAfterVisibility = needsBackgroundClock(cfg, document.hidden) && state.game?.state === 'playing';
