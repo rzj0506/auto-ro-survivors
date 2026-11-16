@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         RO 倖存者：三系法術與寶箱助手
 // @namespace    ro-survivors-local-helper
-// @version      1.4.0
-// @description  ro-survivors.com 多語系適配：三系法術、避怪拾取、寶箱優先級、放逐、重複遠征與背景掛機。
+// @version      1.5.0
+// @description  ro-survivors.com：技能／寶箱獨立重抽、智能累積升級、三系法術、避怪拾取、放逐、重複遠征與背景掛機。
 // @homepageURL  https://github.com/rzj0506/auto-ro-survivors
 // @updateURL    https://raw.githubusercontent.com/rzj0506/auto-ro-survivors/userscript-release/ro-survivors-helper.meta.js
 // @downloadURL  https://raw.githubusercontent.com/rzj0506/auto-ro-survivors/userscript-release/ro-survivors-helper.user.js
@@ -15,7 +15,7 @@
 
 (() => {
   'use strict';
-  const VERSION = '1.4.0';
+  const VERSION = '1.5.0';
   const BASIC_ANY = '__basic__';
   const FIXED = ['firebolt', 'coldbolt', 'lightning'];
   const SLOT_NAMES = { potion: '藥水', elixir: '秘藥', blessing: '祝福', dish: '料理', deity: '神格' };
@@ -43,7 +43,8 @@
   };
   const DEFAULTS = {
     enabled: false, skills: true, dodge: true, chests: true, pickups: true, background: true,
-    skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true,
+    skillSlots: 4, fourth: '', fifth: '', rarityFirst: true, skillReroll: true, chestReroll: true,
+    bankMode: 'smart', bankEarlySeconds: 120, bankBatchCount: 5, bankMaxWait: 30, bankEmergencyHp: 45,
     banish: false, banishBasic: true, banishExcludeEnabled: false, banishExclude: [],
     repeat: false, expedition: 'prontera', repeatLimit: 0, repeatDelay: 5000,
     lootRange: 1800, partyRoll: 'greed',
@@ -187,7 +188,7 @@ self.onmessage = event => {
     const configured = Object.values(cfg.priorities).some(x => splitTiers(x).length);
     if (!ranked.length) return { type: 'wait', reason: '沒有可識別卡片' };
     const good = ranked.some(c => c.tier === 0);
-    if (configured && !good && budget.used < cfg.maxRerolls && cfg.rerollMode !== 'off') {
+    if (configured && !good && cfg.chestReroll !== false && budget.used < cfg.maxRerolls && cfg.rerollMode !== 'off') {
       const cardChoices = ranked.filter(c => c.canReroll && budget.card > cfg.reserveCard && splitTiers(cfg.priorities[c.slot]).length)
         .filter(c => {
           // 有完整物品表時，只在該欄位確實有目標可抽時使用單張重抽。
@@ -205,10 +206,30 @@ self.onmessage = event => {
     return { type: 'pick', card: ranked[0] };
   }
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  function bankDecision(scene, cfg) {
+    const wait = reason => ({ open: false, reason }), open = reason => ({ open: true, reason });
+    if (!scene.banking) return wait('遊戲未選累積模式');
+    if (cfg.bankMode === 'manual') return wait('累積升級等待手動 B 鍵');
+    if (scene.replica) return wait('累積升級由隊長開啟');
+    if (scene.dead || scene.state !== 'playing' || scene.bankOpen) return wait('等待可操作狀態');
+    const levels = Math.max(0, Number(scene.levels) || 0), chests = Math.max(0, Number(scene.chests) || 0), count = levels + chests;
+    if (!count) return wait('尚無累積升級或寶箱');
+    if (levels && !cfg.skills || chests && !cfg.chests) return wait('佇列包含已關閉自動選取的類別，等待手動');
+    if (cfg.bankMode === 'immediate') return open('每次累積立即處理');
+    if (cfg.bankMode === 'smart') {
+      if (scene.time < cfg.bankEarlySeconds) return open('前期及時升級');
+      if (Number.isFinite(scene.skillCount) && Number.isFinite(scene.skillLimit) && scene.skillCount < scene.skillLimit) return open('技能欄位尚未成型');
+    }
+    if (Number.isFinite(scene.hp) && Number.isFinite(scene.maxHp) && scene.maxHp > 0 && scene.hp > 0 && scene.hp / scene.maxHp * 100 <= cfg.bankEmergencyHp) return open('低血量提前處理');
+    if (count >= cfg.bankBatchCount) return open(`已累積 ${count} 次，批量處理`);
+    if (Number.isFinite(scene.queuedAt) && scene.time - scene.queuedAt >= cfg.bankMaxWait) return open('累積等待已達上限');
+    return wait(`累積 ${count}/${cfg.bankBatchCount} 次，等待批量處理`);
+  }
   function validateConfig(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('設定必須是 JSON 物件');
     const out = JSON.parse(JSON.stringify(DEFAULTS));
-    for (const key of ['enabled', 'skills', 'dodge', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    for (const key of ['enabled', 'skills', 'dodge', 'chests', 'pickups', 'background', 'rarityFirst', 'skillReroll', 'chestReroll', 'banish', 'banishBasic', 'banishExcludeEnabled', 'repeat']) if (typeof raw[key] === 'boolean') out[key] = raw[key];
+    if (['smart', 'batch', 'immediate', 'manual'].includes(raw.bankMode)) out.bankMode = raw.bankMode;
     if (typeof raw.fourth === 'string') out.fourth = raw.fourth.slice(0, 100).trim();
     if (typeof raw.fifth === 'string') out.fifth = raw.fifth.slice(0, 100).trim();
     if ([4, 5].includes(Number(raw.skillSlots))) out.skillSlots = Number(raw.skillSlots);
@@ -217,7 +238,7 @@ self.onmessage = event => {
     if (['greed', 'need', 'pass', 'manual'].includes(raw.partyRoll)) out.partyRoll = raw.partyRoll;
     if (['card-deck', 'deck-card', 'card', 'deck', 'off'].includes(raw.rerollMode)) out.rerollMode = raw.rerollMode;
     if (['best', 'wait'].includes(raw.exhausted)) out.exhausted = raw.exhausted;
-    for (const [key, lo, hi] of [['maxRerolls', 0, 50], ['reserveCard', 0, 99], ['reserveDeck', 0, 99], ['delay', 850, 5000], ['safety', 25, 200], ['chestRange', 100, 12000], ['lootRange', 100, 12000], ['repeatLimit', 0, 9999], ['repeatDelay', 1500, 60000]]) {
+    for (const [key, lo, hi] of [['maxRerolls', 0, 50], ['reserveCard', 0, 99], ['reserveDeck', 0, 99], ['delay', 850, 5000], ['safety', 25, 200], ['chestRange', 100, 12000], ['lootRange', 100, 12000], ['repeatLimit', 0, 9999], ['repeatDelay', 1500, 60000], ['bankEarlySeconds', 0, 900], ['bankBatchCount', 1, 50], ['bankMaxWait', 5, 180], ['bankEmergencyHp', 0, 100]]) {
       if (Number.isFinite(Number(raw[key]))) out[key] = clamp(Math.round(Number(raw[key])), lo, hi);
     }
     for (const slot of Object.keys(SLOT_NAMES)) if (typeof raw.priorities?.[slot] === 'string') out.priorities[slot] = raw.priorities[slot].slice(0, 5000);
@@ -274,7 +295,7 @@ self.onmessage = event => {
     }
     return best;
   }
-  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, SLOT_ALIASES, slotId, pickerKindOf, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, pickupPriority, pickupTargets, rankChest, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove };
+  const core = { VERSION, DEFAULTS, FIXED, BASIC_ANY, STAGES, SLOT_ALIASES, slotId, pickerKindOf, bankDecision, BACKGROUND_WORKER_SOURCE, needsBackgroundClock, clampPanelPosition, norm, baseName, tokenId, splitTiers, matchToken, tierOf, rarityOf, resolveItem, upgradeOf, skillId, chooseSkill, banishCandidate, displayPriority, pickupPriority, pickupTargets, rankChest, chestDecision, validateConfig, pointSegmentDistance, insideZone, planMove };
   if (typeof module === 'object' && module.exports) { module.exports = core; return; }
   if (typeof window === 'undefined' || window.top !== window.self) return;
   if (window.__RO_SURVIVORS_HELPER__) return;
@@ -295,6 +316,7 @@ self.onmessage = event => {
     settings: null, slotDefinitions: [], catalogLang: null, autoPauseOriginal: null, clockWorker: null, clockFallback: null, clockRunning: false,
     clockTicker: null, clockTickerWasRunning: false, backgroundLastLogic: 0, backgroundStatus: '前台', resumeAfterVisibility: false,
     panelDrag: null, suppressMiniClickUntil: 0,
+    bankSince: null, bankClick: null, bankStatus: '等待進入本局',
   };
   let root, panel, ui, interval, attachTimer;
   const $ = selector => document.querySelector(selector);
@@ -453,6 +475,7 @@ self.onmessage = event => {
     if (!g?.player || typeof g.moveTo !== 'function' || !Array.isArray(g.enemies)) return;
     if (state.game === g) return;
     stopMove(); state.game = g; state.route = null; state.velocities = new WeakMap(); state.used = state.skillUsed = 0;
+    state.bankSince = null; state.bankClick = null; state.bankStatus = '等待累積升級';
     if (state.launchPending) { state.runsStarted++; log(`第 ${state.runsStarted} 次自動遠征已開始`); }
     state.launchPending = false; state.flow = null; state.gameoverAt = null;
     syncBackground();
@@ -547,6 +570,8 @@ self.onmessage = event => {
     const buttons = [...picker.querySelectorAll('#pk-cards .pk-card')];
     if (!buttons.length) return;
     if (buttons[0] !== state.pickerNode) {
+      // 批量模式會連續展示不同寶箱；again 僅用於同一組牌的重抽／放逐刷新。
+      if (!picker.classList.contains('again')) state.used = state.skillUsed = 0;
       state.pickerNode = buttons[0]; state.born = now; state.pending = null;
     }
     const cards = buttons.map((b, i) => readCard(b, i, kind));
@@ -723,6 +748,31 @@ self.onmessage = event => {
     // 只呼叫與滑鼠移動相同的尋路入口；角色仍以遊戲原速度行走。
     g.moveTo(best.x, best.y); state.moveOwned = true; state.previous = best;
   }
+  function bankStep(now) {
+    const g = state.game;
+    if (!g) return false;
+    const levels = Math.max(0, Number(g.pendingLevelUps) || 0), chests = Array.isArray(g.bankedChests) ? g.bankedChests.length : 0;
+    if (!g.banking || !levels && !chests || g.bankOpen) {
+      state.bankSince = null; state.bankClick = null;
+      state.bankStatus = g.bankOpen ? '正在依遊戲順序選完本批寶箱與技能' : g.banking ? '尚無累積升級或寶箱' : '遊戲未選累積模式；按原遊戲方式選牌';
+      return false;
+    }
+    if (!Number.isFinite(g.time)) { state.bankStatus = '等待遊戲計時'; return false; }
+    state.bankSince ??= g.time;
+    const result = bankDecision({ banking: !!g.banking, levels, chests, state: g.state, dead: !!g.player?.dead, bankOpen: !!g.bankOpen,
+      replica: !!g.coop?.replica, time: g.time, queuedAt: state.bankSince, hp: g.hp, maxHp: g.stats?.maxHp,
+      skillCount: g.slots?.length, skillLimit: Math.min(cfg.skillSlots, g.maxSkills || cfg.skillSlots) }, cfg);
+    state.bankStatus = result.reason;
+    if (!result.open || !visible($('#hud'))) return false;
+    const button = $('#bank-btn');
+    if (!visible(button) || button.disabled || typeof button.onclick !== 'function') { state.bankStatus = '等待遊戲升級按鈕可用'; return false; }
+    if (state.bankClick) {
+      state.bankStatus = now - state.bankClick.at > 3000 ? '升級按鈕未響應，等待手動 B 鍵或重新識別' : '已點擊升級，等待遊戲響應';
+      return false;
+    }
+    stopMove(); state.bankClick = { at: now }; button.click();
+    log(`開啟累積升級：${result.reason}（${levels} 級／${chests} 箱）`); return true;
+  }
   function tick() {
     try {
       if (!cfg.enabled) return;
@@ -735,6 +785,7 @@ self.onmessage = event => {
       if (now - state.lastListRead > 1000) { state.lastListRead = now; if (visible($('#stages'))) readStages(); }
       if (collectReveal(now)) return;
       if (repeatStep(now)) return;
+      if (bankStep(now)) { state.errorCount = 0; return; }
       if (visible($('#picker'))) actPicker(now);
       else { resetPicker(); movement(now); }
       state.errorCount = 0;
@@ -760,6 +811,7 @@ self.onmessage = event => {
     ui.querySelector('#exclude-count').textContent = `${cfg.banishExcludeEnabled ? '排除名單已啟用' : '排除名單未啟用'}，已勾選 ${cfg.banishExclude.length} 個技能`;
     ui.querySelector('#repeat-status').textContent = `${cfg.repeat ? '重複遠征已啟用' : '重複遠征已關閉'} · 本次已自動開局 ${state.runsStarted} 次${cfg.repeatLimit ? `／${cfg.repeatLimit}` : '（無上限）'}`;
     ui.querySelector('#background-status').textContent = `背景掛機：${state.backgroundStatus}`;
+    ui.querySelector('#bank-status').textContent = state.bankStatus;
     ui.querySelector('#log').textContent = state.logs.slice(-10).map(e => `${e.time} ${e.message}`).join('\n');
   }
   function populate() {
@@ -832,6 +884,8 @@ self.onmessage = event => {
       <div class="top" id="drag-handle"><strong title="按住標題拖動">RO 助手 ${VERSION} · 拖動</strong><button id="reset-position">歸位</button><button id="close">收起</button></div>
       <div id="status"></div><button id="toggle">啟動 (F8)</button>
       <div class="checkrow"><label><input data-setting="skills" type="checkbox"> 自動選技能</label><label><input data-setting="dodge" type="checkbox"> 自動避怪</label><label><input data-setting="chests" type="checkbox"> 尋寶與寶箱選卡</label><label><input data-setting="pickups" type="checkbox"> 安全拾取掉落物</label></div>
+      <div class="checkrow"><label><input data-setting="skillReroll" type="checkbox"> 允許局內技能重抽</label><label><input data-setting="chestReroll" type="checkbox"> 允許寶箱重抽</label></div>
+      <small>技能僅在無合規選項時重抽；寶箱依下方策略重抽。兩者仍共用遊戲次數並遵守保留量，關閉重抽不影響正常選牌與放逐。</small>
       <p id="owned" class="hint"></p>
       <div class="checkrow">技能欄位（不含普攻）：<label><input type="radio" name="skillSlots" data-setting="skillSlots" value="4"> 4 個</label><label><input type="radio" name="skillSlots" data-setting="skillSlots" value="5"> 5 個（二轉）</label></div>
       <label>第四個技能（空白＝任意技能）<input data-setting="fourth" list="skills-list" placeholder="例如 聖靈召喚 [soul_strike]"><datalist id="skills-list"></datalist></label>
@@ -839,6 +893,12 @@ self.onmessage = event => {
       <label><input data-setting="rarityFirst" type="checkbox"> 技能升級先比稀有度，再比目標／急速／傷害</label>
       <small>適配 ro-survivors.com。固定三技：火箭術／冰箭術／雷擊術。寶箱固定先比使用者優先級，同級才比稀有度；本開關只影響技能升級。</small>
       <label><input data-setting="background" type="checkbox"> 背景掛機：切換分頁繼續運行</label><small id="background-status"></small>
+      <details><summary>累積升級：前期及時、後期批量</summary>
+      <label>累積處理方式<select data-setting="bankMode"><option value="smart">智能：前期立即，後期批量</option><option value="batch">批量：按次數／等待時間處理</option><option value="immediate">每次累積立即處理</option><option value="manual">手動按遊戲 B 鍵</option></select></label>
+      <div class="row"><label>前期秒數<input data-setting="bankEarlySeconds" type="number" min="0" max="900"></label><label>批量累積次數<input data-setting="bankBatchCount" type="number" min="1" max="50"></label></div>
+      <div class="row"><label>最長等待秒數<input data-setting="bankMaxWait" type="number" min="5" max="180"></label><label>低血量提前處理（%）<input data-setting="bankEmergencyHp" type="number" min="0" max="100"></label></div>
+      <p class="hint">先在遊戲出發難度選「累積」。智能模式在前期或 4／5 技未填滿時及時選；後期按次數或等待時間批量選，低血量提前處理。秒數按局內戰鬥時間計。0% 關閉低血量提前處理。</p>
+      <p class="hint">只點遊戲的「升級」按鈕，不改局內難度。遊戲會先選完寶箱再選技能，不能拆開批次；有未啟用自動選取的類別時等待手動。組隊跟隨隊長，死亡前未使用的累積仍可能丟失。</p><small id="bank-status"></small></details>
       <details><summary>升級選牌前放逐已有技能</summary>
       <div class="buttons"><button id="banish-toggle">啟動放逐</button><button id="exclude-toggle">啟用排除放逐的技能</button></div>
       <label><input data-setting="banishBasic" type="checkbox"> 同時放逐普攻的升級牌（不佔 4／5 技名額）</label>
@@ -865,7 +925,6 @@ self.onmessage = event => {
       <label>尋找掉落物最大距離<input data-setting="lootRange" type="number" min="100" max="12000"></label>
       <label>組隊掉落分配<select data-setting="partyRoll"><option value="greed">貪婪</option><option value="need">需求</option><option value="pass">放棄</option><option value="manual">等待手動</option></select></label>
       <label>每次選卡等待毫秒<input data-setting="delay" type="number" min="850" max="5000"></label>
-      <label><input data-setting="skillReroll" type="checkbox"> 無合規技能牌時有限重抽整組</label>
       <p class="hint">安全目標中優先寶箱與磁鐵，再拾取其他掉落。方向鍵／WASD 或畫面點擊後讓出操作 3 秒。背景模式會暫時關閉遊戲「離開自動暫停」，並用背景時鐘繼續運行；保留手動暫停。瀏覽器凍結／卸載分頁或電腦休眠仍會中斷。</p>
       <div class="buttons"><button id="rescan">重新識別</button><button id="diagnose">顯示診斷</button></div><pre id="log"></pre>
       </details>
@@ -910,10 +969,10 @@ self.onmessage = event => {
       if (visible(prompt) && /隊長|captain|capitán|capitão/i.test(prompt.textContent)) { prompt.click(); readStages(); log('已打開隊長的副本清單'); }
       else log('請先到遠征隊長附近，或手動打開遠征清單後再讀取');
     };
-    ui.querySelector('#rescan').onclick = () => { resetPicker(); state.flow = null; state.errorCount = 0; if (!state.hooks) attach(); readStages(); log('已重新識別；本組重抽計數重新開始'); };
+    ui.querySelector('#rescan').onclick = () => { resetPicker(); state.flow = null; state.bankClick = null; state.errorCount = 0; if (!state.hooks) attach(); readStages(); log('已重新識別；本組重抽計數重新開始'); };
     ui.querySelector('#diagnose').onclick = () => {
       const g = state.game, picker = $('#picker'), kind = picker && pickerKind(picker);
-      const report = { version: VERSION, site: location.origin, language: state.settings?.lang, bridge: state.bridge, state: g?.state, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
+      const report = { version: VERSION, site: location.origin, language: state.settings?.lang, bridge: state.bridge, state: g?.state, skillReroll: cfg.skillReroll, chestReroll: cfg.chestReroll, bankMode: cfg.bankMode, banking: !!g?.banking, pendingLevels: g?.pendingLevelUps, pendingChests: g?.bankedChests?.length, bankStatus: state.bankStatus, background: cfg.background, backgroundClock: state.backgroundStatus, hidden: document.hidden, autoPause: state.settings?.autoPause, enemies: g?.enemies?.length, chests: g?.pickups?.filter(p => p.kind === 'chest' && !p.dead).length, drops: g?.pickups?.filter(p => !p.dead).length, skillSlots: cfg.skillSlots, owned: ownedSkills(), basicAttack: basicAttackId(), usedRerolls: state.used, repeatStage: cfg.expedition, autoRuns: state.runsStarted, banish: cfg.banish, banishBasic: cfg.banishBasic, banishExcludeEnabled: cfg.banishExcludeEnabled, banishExclude: cfg.banishExclude,
         cards: visible(picker) && kind ? [...picker.querySelectorAll('.pk-card')].map((b, i) => { const c = readCard(b, i, kind); return { name: c.name, id: c.id, slot: c.slot, rarity: c.rarity, lines: c.lines }; }) : [] };
       ui.querySelector('#config').value = JSON.stringify(report, null, 2); ui.querySelector('#config').closest('details').open = true;
     };

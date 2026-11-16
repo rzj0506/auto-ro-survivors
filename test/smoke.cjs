@@ -6,6 +6,15 @@ const vm = require('node:vm');
 const C = require('../src/ro-survivors-helper.user.js');
 const { buildRelease } = require('../scripts/build-release.cjs');
 const cfg = C.validateConfig({ ...C.DEFAULTS, skillSlots: 5, banish: true });
+const bankScene = { banking: true, state: 'playing', dead: false, bankOpen: false, replica: false, levels: 1, chests: 0, time: 200, queuedAt: 200, hp: 100, maxHp: 100, skillCount: 5, skillLimit: 5 };
+assert.equal(C.bankDecision(bankScene, cfg).open, false);
+for (const more of [{ time: 30 }, { skillCount: 4 }, { levels: 3, chests: 2 }, { time: 230 }, { hp: 40 }])
+  assert.equal(C.bankDecision({ ...bankScene, ...more }, cfg).open, true);
+for (const more of [{ replica: true }, { state: 'paused' }, { dead: true }, { banking: false }, { bankOpen: true }])
+  assert.equal(C.bankDecision({ ...bankScene, levels: 9, ...more }, cfg).open, false);
+assert.equal(C.bankDecision({ ...bankScene, levels: 9 }, { ...cfg, bankMode: 'manual' }).open, false);
+assert.equal(C.bankDecision({ ...bankScene, levels: 9 }, { ...cfg, skills: false }).open, false);
+assert.equal(C.bankDecision(bankScene, { ...cfg, bankMode: 'immediate' }).open, true);
 for (const labels of [['藥水','秘藥','祝福','料理','神祇'], ['Potion','Elixir','Blessing','Dish','Deity'], ['Poción','Elixir','Bendición','Plato','Deity'], ['Poção','Elixir','Bênção','Prato','Divindade']])
   assert.deepEqual(labels.map(label => C.slotId(label)), ['potion','elixir','blessing','dish','deity']);
 for (const title of ['寶箱','Treasure chest','Cofre del tesoro','Baú do tesouro']) assert.equal(C.pickerKindOf(title), 'chest');
@@ -30,6 +39,8 @@ const gods = [
 const godCfg = C.validateConfig({ ...cfg, rarityFirst: true, priorities: { deity: '貪婪之神 [g_avarice]\n智慧之神 [g_wisdom]' } });
 assert.equal(C.chestDecision(gods, godCfg, { used: 0, card: 9, deck: 9 }, true, []).card.id, 'g_avarice');
 assert.equal(C.chestDecision(gods.slice(0, 2), godCfg, { used: 0, card: 0, deck: 0 }, true, []).card.id, 'g_wisdom');
+assert.equal(C.chestDecision(gods.slice(0, 1), { ...godCfg, chestReroll: false }, { used: 0, card: 9, deck: 9 }, true, []).type, 'pick');
+assert.equal(C.chestDecision([{ ...gods[0], canReroll: true }], { ...godCfg, chestReroll: true, skillReroll: false }, { used: 0, card: 9, deck: 9 }, true, []).type, 'card');
 assert.equal(C.rankChest(gods, C.DEFAULTS)[0].id, 'coldbolt');
 assert.equal(C.rankChest(gods, { ...godCfg, priorities: { deity: 'g_avarice | g_wisdom' } })[0].id, 'g_wisdom');
 assert.deepEqual(C.clampPanelPosition({ x: 999, y: -1 }, { width: 390, height: 600 }, { width: 1000, height: 800 }), { x: 602, y: 8 });
