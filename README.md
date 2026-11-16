@@ -1,4 +1,4 @@
-RO 倖存者助手 1.4.0
+RO 倖存者助手 1.5.0
 
 [安裝／更新腳本](https://raw.githubusercontent.com/rzj0506/auto-ro-survivors/userscript-release/ro-survivors-helper.user.js)
 
