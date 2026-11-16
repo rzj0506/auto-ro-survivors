@@ -2,6 +2,7 @@
   "enabled": false,
   "skills": true,
   "dodge": true,
+  "bellShelter": true,
   "chests": true,
   "pickups": true,
   "background": true,

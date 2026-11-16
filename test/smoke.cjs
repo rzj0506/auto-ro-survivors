@@ -15,6 +15,20 @@ for (const more of [{ replica: true }, { state: 'paused' }, { dead: true }, { ba
 assert.equal(C.bankDecision({ ...bankScene, levels: 9 }, { ...cfg, bankMode: 'manual' }).open, false);
 assert.equal(C.bankDecision({ ...bankScene, levels: 9 }, { ...cfg, skills: false }).open, false);
 assert.equal(C.bankDecision(bankScene, { ...cfg, bankMode: 'immediate' }).open, true);
+const bellEffect = { mesh: { position: { x: 500, y: 900, z: 500 } }, bellMat: {}, groundMat: { uniforms: { safeR: { value: 150 } } }, charge: .5, sealed: false, waveAge: -1, out: -1, toll() {}, finish() {} };
+const shelter = C.readBellShelters([bellEffect])[0];
+assert.equal(shelter.y, 500);
+assert.equal(shelter.radius, 128);
+assert.deepEqual(C.readBellShelters([{}, { ...bellEffect, out: 0 }]), []);
+const insidePlan = C.planMove({ player: { x: 620, y: 500 }, enemies: [{ x: 570, y: 500, radius: 40 }], target: { x: 900, y: 500 }, shelter }, cfg);
+assert(insidePlan && Math.hypot(insidePlan.x - 500, insidePlan.y - 500) <= 128);
+const centerPlan = C.planMove({ player: { x: 500, y: 500 }, enemies: [{ x: 510, y: 500, radius: 35 }], target: { x: 500, y: 500 }, shelter }, cfg);
+assert(Math.hypot(centerPlan.x - 500, centerPlan.y - 500) > 20);
+assert(Math.hypot(centerPlan.x - 500, centerPlan.y - 500) <= 128);
+const incomingPlan = C.planMove({ player: { x: 100, y: 500 }, enemies: [{ x: 160, y: 500, radius: 35 }], target: { x: 500, y: 500 }, shelter }, cfg);
+assert(incomingPlan.x > 170);
+assert.equal(C.validateConfig({}).bellShelter, true);
+assert.equal(C.validateConfig({ bellShelter: false }).bellShelter, false);
 for (const labels of [['藥水','秘藥','祝福','料理','神祇'], ['Potion','Elixir','Blessing','Dish','Deity'], ['Poción','Elixir','Bendición','Plato','Deity'], ['Poção','Elixir','Bênção','Prato','Divindade']])
   assert.deepEqual(labels.map(label => C.slotId(label)), ['potion','elixir','blessing','dish','deity']);
 for (const title of ['寶箱','Treasure chest','Cofre del tesoro','Baú do tesouro']) assert.equal(C.pickerKindOf(title), 'chest');
