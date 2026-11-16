@@ -6,6 +6,14 @@ const vm = require('node:vm');
 const C = require('../src/ro-survivors-helper.user.js');
 const { buildRelease } = require('../scripts/build-release.cjs');
 const cfg = C.validateConfig({ ...C.DEFAULTS, skillSlots: 5, banish: true });
+for (const labels of [['藥水','秘藥','祝福','料理','神祇'], ['Potion','Elixir','Blessing','Dish','Deity'], ['Poción','Elixir','Bendición','Plato','Deity'], ['Poção','Elixir','Bênção','Prato','Divindade']])
+  assert.deepEqual(labels.map(label => C.slotId(label)), ['potion','elixir','blessing','dish','deity']);
+for (const title of ['寶箱','Treasure chest','Cofre del tesoro','Baú do tesouro']) assert.equal(C.pickerKindOf(title), 'chest');
+for (const title of ['升級！','Level Up!','¡Level Up!','Subiu de nível!']) assert.equal(C.pickerKindOf(title), 'skill');
+assert.equal(C.slotId('未識別欄位'), '');
+assert(C.matchToken('火箭術神祇', { name: '火箭術 Deity +3' }));
+assert.deepEqual(['Lanças de Fogo', 'Lanças de Gelo', 'Relâmpago'].map(name => C.skillId(name)), C.FIXED);
+assert.equal(C.STAGES[9][0], 'louyang');
 const basic = { id: 'atk_test', isNew: false, canBanish: true };
 assert.equal(C.banishCandidate([basic], C.FIXED, cfg, 'atk_test'), basic);
 assert.equal(C.banishCandidate([basic], C.FIXED, { ...cfg, banishExcludeEnabled: true, banishExclude: [C.BASIC_ANY] }, 'atk_test'), null);
@@ -36,6 +44,8 @@ worker.self.onmessage({ data: 'start' }); worker.self.onmessage({ data: 'start' 
 [...timers.values()][0](); assert.deepEqual(messages, ['pulse']);
 worker.self.onmessage({ data: 'stop' }); assert.equal(timers.size, 0);
 const source = fs.readFileSync(require.resolve('../src/ro-survivors-helper.user.js'), 'utf8');
+assert(source.includes('@match        https://ro-survivors.com/*'));
+assert(!source.includes('@match        https://ro.hans-webgametw.com/'));
 const release = buildRelease(source, 'rzj0506/auto-ro-survivors');
 assert.equal(release.version, C.VERSION);
 assert(release.meta.includes('@updateURL    https://raw.githubusercontent.com/rzj0506/auto-ro-survivors/userscript-release/ro-survivors-helper.meta.js'));
